@@ -1,0 +1,23 @@
+[project]
+name = "login_afraid_org"
+version = "1.0.0"
+description = "Login to afraid.org Dynamic DNS without a browser. Keeps your account from expiring."
+authors = [
+    {name = "Ingo Heinrich", email = "login_afraid_org@goheinrich.de"},
+]
+readme = "README.md"
+license = {file = "LICENSE"}
+requires-python = "<3.13,>=3.10"
+dependencies = [
+    "mechanize",
+    "configargparse",
+]
+
+[project.optional-dependencies]
+dev = [
+    "ruff",
+    "pyinstaller",
+]
+
+[tool.pdm]
+distribution = false

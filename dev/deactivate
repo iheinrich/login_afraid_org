@@ -1,0 +1,37 @@
+#
+# Remove login_afraid_org environment from current (Bash) shell.
+#
+# (c) 2024 Ingo Heinrich
+# See LICENSE file for full license.
+#
+unset PDM_HOME
+unset PDM_CACHE_DIR
+unset PDM_LOG_DIR
+if [ -n "${_LAO_PATH}" ]; then
+    export PATH="${_LAO_PATH}"
+fi
+unset _LAO_PATH
+if [ -n "${_LAO_XDG_DATA_HOME}" ]; then
+    export XDG_DATA_HOME="${_LAO_XDG_DATA_HOME}"
+else
+    unset XDG_DATA_HOME
+fi
+unset _LAO_XDG_DATA_HOME
+if [ -n "${_LAO_XDG_CONFIG_HOME}" ]; then
+    export XDG_CONFIG_HOME="${_LAO_XDG_CONFIG_HOME}"
+else
+    unset XDG_CONFIG_HOME
+fi
+unset _LAO_XDG_CONFIG_HOME
+if [ -n "${_LAO_XDG_CACHE_HOME}" ]; then
+    export XDG_CACHE_HOME="${_LAO_XDG_CACHE_HOME}"
+else
+    unset XDG_CACHE_HOME
+fi
+unset _LAO_XDG_CACHE_HOME
+if [ -n "${_LAO_XDG_STATE_HOME}" ]; then
+    export XDG_STATE_HOME="${_LAO_XDG_STATE_HOME}"
+else
+    unset XDG_STATE_HOME
+fi
+unset _LAO_XDG_STATE_HOME
