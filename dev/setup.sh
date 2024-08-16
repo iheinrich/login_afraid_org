@@ -72,8 +72,8 @@ python="$(command -v python3 2>/dev/null)"
 [[ -n ${python} ]] || python="$(command -v python 2>/dev/null)"
 [[ -x ${python} ]] || die 'no Python command found'
 [[ $(${python} --version) =~ ^[^0-9]*(([0-9]+)"."([0-9]+)".".*)$ ]] || die "failed to get version of \"${python}\""
-[[ ${BASH_REMATCH[2]} -ge 3 ]] || die "Python version 3.8 or greater required, found: ${BASH_REMATCH[1]}"
-[[ ${BASH_REMATCH[2]} -gt 3 || ${BASH_REMATCH[3]} -gt 8 ]] || die "Python version 3.8 or greater required, found: ${BASH_REMATCH[1]}"
+[[ ${BASH_REMATCH[2]} -ge 3 ]] || die "Python version 3.9 or greater required, found: ${BASH_REMATCH[1]}"
+[[ ${BASH_REMATCH[2]} -gt 3 || ${BASH_REMATCH[3]} -gt 9 ]] || die "Python version 3.9 or greater required, found: ${BASH_REMATCH[1]}"
 
 # installation directory
 cd "$(dirname "$0")" || die "failed to change to $(dirname "$0")"
@@ -91,7 +91,7 @@ curl -sSLO https://pdm-project.org/install-pdm.py || die "failed to download PDM
 curl -sSL https://pdm-project.org/install-pdm.py.sha256 | shasum -a 256 -c - 2>/dev/null >/dev/null || die "downloaded PDM installer corrupt: checksum mismatch"
 
 # prepare environment
-# shellcheck disable=SC2016
+# shellcheck disable=SC2016  # variable expansion shall happen when activate is sourced
 {
     echo '[ -z "${_LAO_PATH}" ] || export PATH="${_LAO_PATH}"'
     echo 'export _LAO_PATH="${PATH}"'
@@ -112,11 +112,14 @@ curl -sSL https://pdm-project.org/install-pdm.py.sha256 | shasum -a 256 -c - 2>/
     echo '[ -n "${_LAO_XDG_CACHE_HOME}" ] || export _LAO_XDG_CACHE_HOME="${XDG_CACHE_HOME}"'
     echo 'export XDG_CACHE_HOME="${PDM_HOME}/cache"'
     echo 'export PDM_CACHE_DIR="${XDG_CACHE_HOME}/pdm"'
+    echo '[ -e "${PDM_CACHE_DIR}" ] || mkdir -p "${PDM_CACHE_DIR}"'
     echo '[ -n "${_LAO_XDG_STATE_HOME}" ] || export _LAO_XDG_STATE_HOME="${XDG_STATE_HOME}"'
     echo 'export XDG_STATE_HOME="${PDM_HOME}/state"'
     echo 'export PDM_LOG_DIR="${XDG_STATE_HOME}/log"'
+    echo '[ -e "${PDM_LOG_DIR}" ] || mkdir -p "${PDM_LOG_DIR}"'
     echo 'export PATH="${PDM_HOME}/bin:'"${INSTALL_DIR}"':${PATH}"'
 } >activate || die 'failed to write "activate" script'
+# shellcheck disable=SC1091  # "activate" script is created at runtime only
 source activate || die "failed to source activate script"
 
 # install PDM
@@ -124,13 +127,27 @@ while IFS=$'\n' read -r line; do
     echo "[INFO] ${line}"
 done < <("${python}" -u install-pdm.py -p "${PDM_HOME}" 2>&1) || die "failed to install PDM"
 
+# config PDM: use venv, create .venv in project directory
+pdm config python.use_venv true
+pdm config venv.in_project true
+# set Python provider to one that is _not_ available - force PDM to _always_ download Python
+case "$OSTYPE" in
+    darwin*) pdm config python.providers winreg ;;
+    *) pdm config python.providers macos ;;
+esac
+
 # setup project
 cd "$(dirname "${INSTALL_DIR}")" || die "failed to change to \"$(dirname "${INSTALL_DIR}")\""
 RUN_DIR="$(pwd)" || die "failed to determine RUN_DIR"
 export RUN_DIR
+# enforce _latest_ python is used
 while IFS=$'\n' read -r line; do
     echo "[INFO] ${line}"
-done < <(pdm update --dev --update-all --no-editable --no-self --with dev 2>&1) || die '"pdm init" failed to initialize login_afraid_org'
+done < <(pdm use --ignore-remembered --auto-install-max 2>&1) || die "pdm failed to initialize Python for login_afraid_org"
+# pdm sync will either update (from pdm.lock) or create missing .venv
+while IFS=$'\n' read -r line; do
+    echo "[INFO] ${line}"
+done < <(pdm sync --clean --dev --with dev --no-editable --no-self 2>&1) || die "pdm failed to initialize login_afraid_org"
 
 echo
 echo '[INFO] All setup'

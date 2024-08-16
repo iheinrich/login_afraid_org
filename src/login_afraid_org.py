@@ -8,11 +8,11 @@
 import logging
 import os
 import platform
-import re
 import sys
 from argparse import Namespace
 
-import mechanize
+import mechanicalsoup
+import requests
 from configargparse import ArgumentParser  # type: ignore
 
 
@@ -23,8 +23,9 @@ def die(msg: str | None = None, *args, **kwargs):
     sys.exit(1)
 
 
-def init_args(argv: list = None) -> Namespace:
+def init_args(argv: list | None = None) -> Namespace:
     """Configure and process command line arguments"""
+    # use platform to determine default config location
     system = platform.system()
     if system == "Linux":
         configs = [
@@ -32,11 +33,12 @@ def init_args(argv: list = None) -> Namespace:
             os.environ.get("XDG_CONFIG_HOME", "~/.config") + "/login_afraid_org/default.conf",
         ]
     elif system == "Windows":
-        configs = [os.environ.get("LOCALAPPDATA") + "/login_afraid_org/default.conf"]
+        configs = [os.environ.get("LOCALAPPDATA", "~/AppData/Local") + "/login_afraid_org/default.conf"]
     elif system == "Darwin":
         configs = ["~/Library/Preferences/login_afraid_org/default.conf"]
     else:
         logging.warning('unknown platform: "%s", no default config paths available', system)
+    # create parser
     parser = ArgumentParser(
         default_config_files=configs,
         ignore_unknown_config_file_keys=True,
@@ -45,15 +47,15 @@ def init_args(argv: list = None) -> Namespace:
         add_env_var_help=False,
         add_help=True,
         allow_abbrev=True,
-        description="Login to afraid.org Dynamic DNS service to prevent account expiry.",
-        epilog=f'Options that start with "--" can also be set in a config file ({" or ".join(configs)} or specified via'
-        + " -c). Config file syntax allows: key=value (username=myusername or quiet=true or verbose=2), domain="
-        + "[a.afraid.org,b.afraid.org,c.afraid.org]. In general, command-line values override environment variables"
-        + " which override defaults.",
+        description="Login to afraid.org Dynamic DNS v2 page to prevent account expiry.",
+        epilog=f'Options that start with "--" can also be set in a config file ({" or ".join(configs)} or specified '
+        + "via -c). Config file syntax allows key=value (username=myusername or quiet=true or verbose=2) and domain="
+        + "[a.afraid.org,b.afraid.org,c.afraid.org]. In general, command-line values override environment variables "
+        + "which override values from configuration file.",
     )
-    parser.add("-u", "--username", required=True, help="user for login to afraid.org [env var: LAO_USERNAME]")
-    parser.add("-p", "--password", required=True, help="password for login to afraid.org [env var: LAO_PASSWORD]")
-    parser.add(
+    parser.add("-u", "--username", required=True, help="user for login to afraid.org [env var: LAO_USERNAME]")  # type: ignore
+    parser.add("-p", "--password", required=True, help="password for login to afraid.org [env var: LAO_PASSWORD]")  # type: ignore
+    parser.add(  # type: ignore
         "-d",
         "--domain",
         action="append",
@@ -62,15 +64,15 @@ def init_args(argv: list = None) -> Namespace:
         + ', use multiple times to specify different domain names "-d a.afraid.org -d b.afraid.org -d c.afraid.org"'
         + " [env var: LAO_DOMAIN]",
     )
-    parser.add("-c", "--config", is_config_file=True, help="optional path to config file")
-    parser.add(
+    parser.add("-c", "--config", is_config_file=True, help="optional path to config file")  # type: ignore
+    parser.add(  # type: ignore
         "-q",
         "--quiet",
         action="store_true",
         default=False,
         help="no output, not even errors, check exit code for success or failure",
     )
-    parser.add(
+    parser.add(  # type: ignore
         "-v",
         "--verbose",
         action="count",
@@ -79,114 +81,112 @@ def init_args(argv: list = None) -> Namespace:
         + " only",
     )
 
+    # parse args
     args = parser.parse_args(args=argv)
+
+    # configure logging
+    level = logging.WARNING
     if args.quiet:
         # disable all log output
-        logging.basicConfig(level=logging.CRITICAL + 1)
+        level = logging.CRITICAL + 1
     elif args.verbose > 1:
-        logging.basicConfig(level=logging.DEBUG)
+        level = logging.DEBUG
     elif args.verbose > 0:
-        logging.basicConfig(level=logging.INFO)
-    else:
-        # default >= WARNING
-        logging.basicConfig(level=logging.WARNING)
-    formatter = logging.Formatter("%(asctime)s|%(levelname)s|%(message)s", "%Y-%m-%d %H:%M:%S")
-    for handler in logging.getLogger("root").handlers:
-        handler.setFormatter(formatter)
+        level = logging.INFO
+    logging.basicConfig(
+        force=True, level=level, format="%(asctime)s|%(levelname)s|%(message)s", datefmt="%Y-%m-%d %H:%M:%S"
+    )
 
     return args
 
 
-def login(username: str, password: str, domains: list | None = None):
+def login(username: str, password: str, domains: list | None = None) -> None:
     """Log in to afraid.org with username and password, assert login worked then log out again."""
     log = logging.getLogger()
+    log_is_debug = log.level <= logging.DEBUG
 
-    browser = mechanize.Browser()
-
-    # pretend we are not a robot ...
-    browser.set_handle_robots(False)
-
-    # set user agent to make it look like a real browser
-    browser.addheaders = [
-        (
-            "User-agent",
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.110"
-            + " Safari/537.3",
-        )
-    ]
-
-    # navigate to login page
-    response = browser.open("https://freedns.afraid.org/dynamic/")
-    if response.code != 200:
-        die("loading afraid.org Dynamic DNS page failed with HTTP code %s", response.code)
-    log.debug("afraid.org Dynamic DNS page loaded: %s", response)
-
-    # get login form
-    forms = browser.forms()
-    loginform: mechanize.HTMLForm = None
-    for form in forms:
-        if form.action.find("/zc.php") > -1:
-            loginform = form
-    if not loginform:
-        die("login form not found")
-    log.debug("login form: %s", loginform)
-
-    # get login button
-    login: mechanize.SubmitControl = None
-    for control in loginform.controls:
-        if control.name == "submit" and control.value.lower() == "login":
-            login = control
-            break
-    if not login:
-        die("login button not found")
-    log.debug("login button: %s", login)
-
-    # fill username and password
-    loginform["username"] = username
-    loginform["password"] = password
-
-    # submit using login button
-    response = browser.open(loginform.click(id=login.id))
-    if response.code != 200:
-        die("login failed with HTTP code %s", response.code)
-    log.debug("login done: %s", response)
-
-    # check response content - since response code is basically always "200 - OK"
-    result = response.read().decode()
-    match_user = re.compile(r"<tr>\s*<td[^>]*>\s*UserID:</td>\s*<td[^>]*>" + username + r"\s*</td>\s*</tr>").search(
-        result
-    )
-    if not match_user:
-        die(f'login failed - username "{username}" not found in response')
-    if domains:
-        for domain in domains:
-            if result.find(domain) == -1:
-                die(f'login failed - domain "{domain}" not found in response')
-    log.info("login successful")
-
-    # logout
+    browser = None
+    logout = False
     try:
-        link = browser.find_link(text="Logout")
-        if link:
-            log.debug("logout link: %s", link)
-            response = browser.follow_link(link)
-            log.debug("logout successful: %s", response)
-        else:
-            log.warning("logout link not found")
+        # setup browser: set user agent from a real browser (Firefox on Windows 10)
+        browser = mechanicalsoup.StatefulBrowser(
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) "
+            + "Chrome/58.0.3029.110 Safari/537.3"
+        )
+
+        # open Dynamic DNS v2 page
+        response: requests.Response | None = browser.open("https://freedns.afraid.org/dynamic/v2/")
+        if not response or response.status_code != 200:
+            die(
+                "loading afraid.org Dynamic DNS v2 page failed%s",
+                f" with HTTP code {response.status_code}" if response else "",
+            )
+        log.debug("afraid.org Dynamic DNS v2 page loaded:\n----------\n%s\n----------", response.text)
+
+        # fill and submit login form
+        browser.select_form('form[action="/zc.php?step=2"]')
+        browser["username"] = username
+        browser["password"] = password
+        response = browser.submit_selected(btnName="submit")
+        if not response or not browser.page or response.status_code != 200 or not response.text:
+            die(
+                "failed login to afraid.org Dynamic DNS v2%s%s",
+                f" with HTTP code {response.status_code}" if response else "",
+                f":\n----------\n{response.text}\n----------" if log_is_debug and response and response.text else "",
+            )
+        logout = True
+        log.debug("afraid.org Dynamic DNS v2 login successful:\n----------\n%s\n----------", response.text)
+
+        # validate login by asserting "|UserID:|<username>|" is in response content, since return code is always 200
+        euserid = browser.page.find("td", string="UserID:")  # type: ignore
+        if (
+            not euserid
+            or not (eusername := euserid.find_next_sibling("td"))
+            or not eusername.text
+            or not eusername.text.strip() == username
+        ):
+            die(
+                'afraid.org Dynamic DNS v2 login failed, missing username "%s" in page%s',
+                username,
+                f":\n----------\n{response.text}\n----------" if log_is_debug else "",
+            )
+
+        # optionally: check that all domains are listed
+        if domains and (
+            missing := set(domains) - set(domain for domain in domains if browser.page.find("a", string=domain))  # type: ignore
+        ):
+            die(
+                'afraid.org Dynamic DNS v2 login failed, missing %s "%s" in page%s',
+                "domain" if len(missing) == 1 else "domains",
+                '" and "'.join(missing),
+                f":\n----------\n{response.text}\n----------" if log_is_debug else "",
+            )
+
+        # inform user
+        log.info("afraid.org Dynamic DNS v2 login successful")
+
     except Exception as e:
-        if log.isEnabledFor(logging.DEBUG):
-            log.warning("logout failed: %s", e, exc_info=True)
-        else:
-            log.warning("logout failed")
+        die("afraid.org Dynamic DNS v2 login failed due to unexpected exception: %s", e, exc_info=e)
+    finally:
+        # logout + close
+        if browser:
+            try:
+                if logout and (link := browser.find_link(text="Logout")):
+                    response = browser.follow_link(link)
+                    log.debug("afraid.org Dynamic DNS v2 logout successful:\n----------\n%s\n----------", response.text)
+            except Exception as e:
+                log.warning("afraid.org Dynamic DNS v2 logout failed: %s", e, exc_info=e if log_is_debug else None)
+            finally:
+                browser.close()
+
+
+def main(argv: list | None = None) -> None:
+    args = init_args(argv)
+    login(args.username, args.password, args.domain)
 
 
 if __name__ == "__main__":
     try:
-        args = init_args(sys.argv[1:])
-        login(args.username, args.password, args.domain)
+        main()
     except Exception as e:
-        if logging.getLogger().isEnabledFor(logging.DEBUG):
-            die("unexpected failure: %s", e, exc_info=True)
-        else:
-            die("unexpected failure: %s", e)
-        
+        die("unexpected failure: %s", e, exc_info=e)

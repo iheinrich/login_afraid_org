@@ -1,23 +1,26 @@
 [project]
 name = "login_afraid_org"
-version = "1.0.0"
-description = "Login to afraid.org Dynamic DNS without a browser. Keeps your account from expiring."
+version = "1.1.0"
+description = "Login to afraid.org Dynamic DNS v2 without a browser."
 authors = [
     {name = "Ingo Heinrich", email = "login_afraid_org@goheinrich.de"},
 ]
 readme = "README.md"
 license = {file = "LICENSE"}
-requires-python = "<3.13,>=3.10"
+requires-python = ">=3.10.0,<3.15.0"
 dependencies = [
-    "mechanize",
     "configargparse",
+    "MechanicalSoup>=1.4.0",
 ]
 
 [project.optional-dependencies]
 dev = [
-    "ruff",
-    "pyinstaller",
+    "ruff>=0.14.10",
+    "pyinstaller>=6.17.0",
 ]
 
 [tool.pdm]
 distribution = false
+
+[tool.ruff]
+line-length = 120
