@@ -15,16 +15,35 @@ import mechanicalsoup
 import requests
 from configargparse import ArgumentParser  # type: ignore
 
+_LOG_FORMAT = "%(asctime)s | %(levelname)s | %(message)s"
+_LOG_DATEFMT = "%Y-%m-%d %H:%M:%S"
+
+logging.basicConfig(force=True, level=logging.WARNING, format=_LOG_FORMAT, datefmt=_LOG_DATEFMT)
+_LOG = logging.getLogger(__name__)
+
 
 def die(msg: str | None = None, *args, **kwargs):
-    """End with CRITICAL log message"""
+    """
+    End with CRITICAL log message
+
+    :param msg: message to log, if None then no message is logged
+    :param args: arguments for message formatting
+    :param kwargs: keyword arguments for message formatting
+    """
     if msg:
-        logging.critical(msg, *args, **kwargs)
+        _LOG.critical(msg, *args, **kwargs)
     sys.exit(1)
 
 
 def init_args(argv: list | None = None) -> Namespace:
-    """Configure and process command line arguments"""
+    """
+    Configure and process command line arguments
+
+    :param argv: optional list of arguments to parse, if None then sys.argv is used
+
+    :return: parsed arguments as Namespace object
+    """
+    global _LOG
     # use platform to determine default config location
     system = platform.system()
     if system == "Linux":
@@ -37,7 +56,7 @@ def init_args(argv: list | None = None) -> Namespace:
     elif system == "Darwin":
         configs = ["~/Library/Preferences/login_afraid_org/default.conf"]
     else:
-        logging.warning('unknown platform: "%s", no default config paths available', system)
+        _LOG.warning('unknown platform: "%s", no default config paths available', system)
     # create parser
     parser = ArgumentParser(
         default_config_files=configs,
@@ -47,7 +66,7 @@ def init_args(argv: list | None = None) -> Namespace:
         add_env_var_help=False,
         add_help=True,
         allow_abbrev=True,
-        description="Login to afraid.org Dynamic DNS v2 page to prevent account expiry.",
+        description="Login to afraid.org Dynamic DNS v2 page.",
         epilog=f'Options that start with "--" can also be set in a config file ({" or ".join(configs)} or specified '
         + "via -c). Config file syntax allows key=value (username=myusername or quiet=true or verbose=2) and domain="
         + "[a.afraid.org,b.afraid.org,c.afraid.org]. In general, command-line values override environment variables "
@@ -84,7 +103,7 @@ def init_args(argv: list | None = None) -> Namespace:
     # parse args
     args = parser.parse_args(args=argv)
 
-    # configure logging
+    # (re-)configure logging
     level = logging.WARNING
     if args.quiet:
         # disable all log output
@@ -93,17 +112,22 @@ def init_args(argv: list | None = None) -> Namespace:
         level = logging.DEBUG
     elif args.verbose > 0:
         level = logging.INFO
-    logging.basicConfig(
-        force=True, level=level, format="%(asctime)s|%(levelname)s|%(message)s", datefmt="%Y-%m-%d %H:%M:%S"
-    )
+    if level != logging.WARNING:
+        logging.basicConfig(force=True, level=level, format=_LOG_FORMAT, datefmt=_LOG_DATEFMT)
+        _LOG = logging.getLogger(__name__)
 
     return args
 
 
 def login(username: str, password: str, domains: list | None = None) -> None:
-    """Log in to afraid.org with username and password, assert login worked then log out again."""
-    log = logging.getLogger()
-    log_is_debug = log.level <= logging.DEBUG
+    """
+    Log in to afraid.org with username and password, assert login worked then log out again.
+
+    :param username: username for login
+    :param password: password for login
+    :param domains: optional list of domain names to check if they are listed in the page
+    """
+    log_is_debug = _LOG.level <= logging.DEBUG
 
     browser = None
     logout = False
@@ -121,7 +145,7 @@ def login(username: str, password: str, domains: list | None = None) -> None:
                 "loading afraid.org Dynamic DNS v2 page failed%s",
                 f" with HTTP code {response.status_code}" if response else "",
             )
-        log.debug("afraid.org Dynamic DNS v2 page loaded:\n----------\n%s\n----------", response.text)
+        _LOG.debug("afraid.org Dynamic DNS v2 page loaded:\n----------\n%s\n----------", response.text)
 
         # fill and submit login form
         browser.select_form('form[action="/zc.php?step=2"]')
@@ -135,25 +159,25 @@ def login(username: str, password: str, domains: list | None = None) -> None:
                 f":\n----------\n{response.text}\n----------" if log_is_debug and response and response.text else "",
             )
         logout = True
-        log.debug("afraid.org Dynamic DNS v2 login successful:\n----------\n%s\n----------", response.text)
+        _LOG.debug("afraid.org Dynamic DNS v2 after login:\n----------\n%s\n----------", response.text)
 
-        # validate login by asserting "|UserID:|<username>|" is in response content, since return code is always 200
+        # check if credentials were wrong in response content
+        if "Invalid UserID/Pass" in response.text:
+            die("afraid.org Dynamic DNS v2 login failed: invalid UserID/Pass")
+
+        # validate login by asserting "|UserID:|<username>|" is in response content
         euserid = browser.page.find("td", string="UserID:")  # type: ignore
         if (
             not euserid
             or not (eusername := euserid.find_next_sibling("td"))
             or not eusername.text
-            or not eusername.text.strip() == username
+            or eusername.text.strip() != username
         ):
-            die(
-                'afraid.org Dynamic DNS v2 login failed, missing username "%s" in page%s',
-                username,
-                f":\n----------\n{response.text}\n----------" if log_is_debug else "",
-            )
+            die('afraid.org Dynamic DNS v2 login failed, missing username "%s" in page', username)
 
         # optionally: check that all domains are listed
         if domains and (
-            missing := set(domains) - set(domain for domain in domains if browser.page.find("a", string=domain))  # type: ignore
+            missing := set(domains) - {domain for domain in domains if browser.page.find("a", string=domain)}  # type: ignore
         ):
             die(
                 'afraid.org Dynamic DNS v2 login failed, missing %s "%s" in page%s',
@@ -163,9 +187,9 @@ def login(username: str, password: str, domains: list | None = None) -> None:
             )
 
         # inform user
-        log.info("afraid.org Dynamic DNS v2 login successful")
+        _LOG.info("afraid.org Dynamic DNS v2 login successful")
 
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001  # catch-all for unexpected errors
         die("afraid.org Dynamic DNS v2 login failed due to unexpected exception: %s", e, exc_info=e)
     finally:
         # logout + close
@@ -173,9 +197,11 @@ def login(username: str, password: str, domains: list | None = None) -> None:
             try:
                 if logout and (link := browser.find_link(text="Logout")):
                     response = browser.follow_link(link)
-                    log.debug("afraid.org Dynamic DNS v2 logout successful:\n----------\n%s\n----------", response.text)
-            except Exception as e:
-                log.warning("afraid.org Dynamic DNS v2 logout failed: %s", e, exc_info=e if log_is_debug else None)
+                    _LOG.debug(
+                        "afraid.org Dynamic DNS v2 logout successful:\n----------\n%s\n----------", response.text
+                    )
+            except Exception as e:  # noqa: BLE001  # catch-all for unexpected errors
+                _LOG.warning("afraid.org Dynamic DNS v2 logout failed: %s", e, exc_info=e if log_is_debug else None)
             finally:
                 browser.close()
 
@@ -188,5 +214,5 @@ def main(argv: list | None = None) -> None:
 if __name__ == "__main__":
     try:
         main()
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001  # catch-all for unexpected errors
         die("unexpected failure: %s", e, exc_info=e)

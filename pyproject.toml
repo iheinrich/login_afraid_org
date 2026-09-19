@@ -1,6 +1,6 @@
 [project]
 name = "login_afraid_org"
-version = "1.1.0"
+version = "1.2.0"
 description = "Login to afraid.org Dynamic DNS v2 without a browser."
 authors = [
     {name = "Ingo Heinrich", email = "login_afraid_org@goheinrich.de"},
